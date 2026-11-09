@@ -8,6 +8,8 @@ Todo 本身不被改写，不会多出一张插件专属的纸片，也不引入
 □ 询问详细信息 明天下午三点
 ```
 
+> 打包下载：[GitHub Releases](https://github.com/Hallocrux/NLTodo.PaperTodo.Plugins/releases) —— 解压到 PaperTodo 的 `plugins/` 即可，不需要 clone。
+
 ## 语法
 
 不需要任何前缀，正文里说人话就行。
