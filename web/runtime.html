@@ -272,13 +272,18 @@
       return Promise.resolve();
     }
 
-    // 2. 明确不含正文变化：直接返回
+    // 2. 从「已完成」改回「未完成」：重新评估一次，否则取消勾选后不会补提醒
+    if (fields && !fields.has('text') && after.done === false && before && before.done === true) {
+      return applyTodo(after);
+    }
+
+    // 3. 明确不含正文变化：直接返回
     if (fields && !fields.has('text')) {
       state.stats.skipped += 1;
       return Promise.resolve();
     }
 
-    // 3. 防御：没有 changedFields 时的文本比对
+    // 4. 防御：没有 changedFields 时的文本比对
     if (before && before.text === after.text) {
       state.stats.skipped += 1;
       return Promise.resolve();
@@ -307,6 +312,12 @@
     if (!Parser) {
       state.stats.lastError = 'parser_not_loaded';
       return save();
+    }
+
+    // 宿主不允许给已完成的 Todo 设置提醒，直接跳过，避免每次对账都报错
+    if (todo.done === true) {
+      state.stats.skipped += 1;
+      return Promise.resolve();
     }
 
     var key = keyOf(todo);
@@ -505,6 +516,8 @@
   }
 
   function reconcileOne(todo) {
+    if (todo.done === true) return Promise.resolve();
+
     var prev = getRecord(todo.paperId, todo.id);
     var parsed = Parser.parseText(todo.text || '', new Date());
 

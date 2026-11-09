@@ -346,6 +346,44 @@ test('重复诊断不重复堆积', async () => {
   assert.strictEqual(h.host.state.diagnostics.length, 1);
 });
 
+test('已完成的 Todo 不设置提醒', async () => {
+  const h = createHarness({ todos: [] });
+  h.initialize();
+  await tick();
+
+  h.emit({
+    kind: 'todoCreated',
+    todo: { paperId: 'p1', id: 't1', text: '喝水 @17tomorrow', done: true, reminderAt: null }
+  });
+  await tick();
+
+  assert.strictEqual(h.setReminderCalls().length, 0);
+  assert.strictEqual(h.host.state.stats.failed, 0, '不应计入失败');
+});
+
+test('启动对账跳过已完成的 Todo', async () => {
+  const h = createHarness({
+    todos: [{ paperId: 'p1', id: 't1', text: '喝水 @17tomorrow', done: true, reminderAt: null }]
+  });
+  h.initialize();
+  await tick();
+
+  assert.strictEqual(h.setReminderCalls().length, 0);
+  assert.strictEqual(h.host.state.stats.failed, 0);
+});
+
+test('取消完成状态后重新评估并设置提醒', async () => {
+  const h = createHarness({ todos: [] });
+  h.initialize();
+  await tick();
+
+  const before = { paperId: 'p1', id: 't1', text: '喝水 @17tomorrow', done: true, reminderAt: null };
+  h.emit({ kind: 'todoChanged', before, after: { ...before, done: false }, changedFields: 'completion' });
+  await tick();
+
+  assert.strictEqual(h.setReminderCalls().length, 1, '取消勾选后应补上提醒');
+});
+
 test('删除 Todo：清理状态，不调用 setReminder', async () => {
   const h = createHarness({ todos: [] });
   h.initialize();

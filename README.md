@@ -56,7 +56,7 @@ nltodo/
 插件根目录固定为 **PaperTodo 可执行文件所在目录** 下的 `plugins/`（源码里是 `AppContext.BaseDirectory`，不是 AppData）。目录名必须与 `plugin.json` 的 `id` 完全一致：
 
 ```text
-<PaperTodo 所在目录>/plugins/papertodo.nltodo/
+<PaperTodo 所在目录>/plugins/nltodo.papertodo.plugins/
 ├── plugin.json
 └── web/
     ├── index.html
@@ -67,7 +67,7 @@ nltodo/
 便携版的 `<PaperTodo>` 就是 exe 所在目录，例如：
 
 ```text
-<PaperTodo>\plugins\papertodo.nltodo\
+<PaperTodo>\plugins\nltodo.papertodo.plugins\
 ```
 
 安装只需 `plugin.json` 和 `web/` 三件套，`test/`、`prds/`、`package.json` 不必拷进去。
@@ -77,16 +77,16 @@ nltodo/
 改动后重新部署（在仓库根目录执行，把 `<PaperTodo>` 换成本机安装目录）：
 
 ```bash
-cp plugin.json <PaperTodo>/plugins/papertodo.nltodo/ && \
-cp web/index.html web/runtime.html web/parser.js <PaperTodo>/plugins/papertodo.nltodo/web/
+cp plugin.json <PaperTodo>/plugins/nltodo.papertodo.plugins/ && \
+cp web/index.html web/runtime.html web/parser.js <PaperTodo>/plugins/nltodo.papertodo.plugins/web/
 ```
 
 ## 验证是否真的在跑
 
-Runtime 没有界面。启动后它会往 `plugins/data/papertodo.nltodo.json` 的 `runtime` 域写一份状态：
+Runtime 没有界面。启动后它会往 `plugins/data/nltodo.papertodo.plugins.json` 的 `runtime` 域写一份状态：
 
 ```text
-<PaperTodo>\plugins\data\papertodo.nltodo.json
+<PaperTodo>\plugins\data\nltodo.papertodo.plugins.json
 ```
 
 ```json
@@ -144,3 +144,7 @@ node --test test/parser.test.js test/runtime.test.js
 - `plugin-samples/PaperTodo.Plugin.OfficialClockWeb`：manifest 与 Runtime 通信范式
 
 注意：宿主用 `JsonStringEnumConverter(CamelCase)` 序列化事件枚举，`changedFields` 实际是 `"text, reminder"` 这类逗号串，不是位数字。`runtime.html` 里的 `readChangedFields` 同时兼容数字、字符串和数组三种形态，避免依赖单一编码。
+
+## License
+
+[MIT](LICENSE) © 2026 Hallocrux
