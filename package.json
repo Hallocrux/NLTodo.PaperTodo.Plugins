@@ -1,0 +1,9 @@
+{
+  "name": "nltodo.papertodo.plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PaperTodo Web Plugin：用 @17tomorrow 这样的标记为普通 Todo 设置原生提醒。",
+  "scripts": {
+    "test": "node --test test/parser.test.js test/runtime.test.js"
+  }
+}

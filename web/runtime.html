@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>NLTodo Runtime</title>
+  <script src="parser.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  'use strict';
+
+  var Parser = window.NLTodoParser;
+  var STATE_VERSION = 1;
+  var DIAG_LIMIT = 50;
+  var SUBSCRIBED_EVENTS = ['todo.created', 'todo.changed', 'todo.deleted'];
+
+  var FIELD_BITS = {
+    text: 1,
+    completion: 2,
+    order: 4,
+    reminder: 8,
+    linkedpaper: 16,
+    linkedpath: 32
+  };
+
+  var state = emptyState();
+  var settings = {};
+  var started = false;
+  var stateLoaded = false;
+  var settingsLoaded = false;
+  var inflight = new Set();
+
+  // ---------------------------------------------------------------- 工具
+
+  function emptyState() {
+    return {
+      version: STATE_VERSION,
+      todos: {},
+      diagnostics: [],
+      notice: null,
+      stats: {
+        startCount: 0,
+        startedAt: null,
+        lastEventAt: null,
+        lastReconcileSeen: null,
+        applied: 0,
+        skipped: 0,
+        failed: 0,
+        lastError: null
+      }
+    };
+  }
+
+  function log() {
+    try {
+      var args = Array.prototype.slice.call(arguments);
+      args.unshift('[nltodo]');
+      console.log.apply(console, args);
+    } catch (_) { /* ignore */ }
+  }
+
+  function normalizeState(raw) {
+    var next = emptyState();
+    if (!raw || typeof raw !== 'object') return next;
+
+    if (raw.todos && typeof raw.todos === 'object') {
+      Object.keys(raw.todos).forEach(function (paperId) {
+        var bucket = raw.todos[paperId];
+        if (!bucket || typeof bucket !== 'object') return;
+        Object.keys(bucket).forEach(function (todoId) {
+          var rec = bucket[todoId];
+          if (!rec || typeof rec !== 'object') return;
+          if (!next.todos[paperId]) next.todos[paperId] = {};
+          next.todos[paperId][todoId] = {
+            expression: String(rec.expression || ''),
+            resolvedAt: rec.resolvedAt || null,
+            lastAppliedReminderAt: rec.lastAppliedReminderAt || null,
+            managedByPlugin: rec.managedByPlugin === true,
+            triggeredAt: rec.triggeredAt || null
+          };
+        });
+      });
+    }
+
+    if (Array.isArray(raw.diagnostics)) {
+      next.diagnostics = raw.diagnostics.slice(-DIAG_LIMIT);
+    }
+    if (typeof raw.notice === 'string') {
+      next.notice = raw.notice;
+    }
+    if (raw.stats && typeof raw.stats === 'object') {
+      Object.keys(next.stats).forEach(function (key) {
+        if (raw.stats[key] !== undefined) next.stats[key] = raw.stats[key];
+      });
+    }
+    return next;
+  }
+
+  function save() {
+    if (!window.papertodo || !window.papertodo.state) return Promise.resolve();
+    return window.papertodo.state.save(state).catch(function (error) {
+      log('state.save failed', error);
+    });
+  }
+
+  /**
+   * 宿主请求加超时。Runtime 的文档在启动阶段可能重新导航，
+   * 此时在途请求的响应会被丢弃，promise 永远不会 settle。
+   * 与其让整条链路挂死，不如超时失败后由上层重试。
+   */
+  function hostRequest(method, params, timeoutMs) {
+    var limit = timeoutMs || 8000;
+
+    if (!window.papertodo || !window.papertodo.workspace) {
+      return Promise.reject(new Error('bridge_unavailable'));
+    }
+
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error('timeout: ' + method));
+      }, limit);
+
+      window.papertodo.workspace.request(method, params).then(
+        function (value) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        function (error) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+
+  function getRecord(paperId, todoId) {
+    var bucket = state.todos[paperId];
+    return bucket && bucket[todoId] ? bucket[todoId] : null;
+  }
+
+  function setRecord(paperId, todoId, record) {
+    if (!state.todos[paperId]) state.todos[paperId] = {};
+    state.todos[paperId][todoId] = record;
+  }
+
+  /**
+   * 宿主的待办提醒属于 Labs 实验特性，默认关闭。
+   * 关闭时 todos.setReminder 会返回 reminders_disabled，这里记成可读提示，
+   * 而不是让它混在普通失败计数里。
+   */
+  function handleWriteError(error) {
+    var code = error && error.code;
+    if (code === 'reminders_disabled') {
+      state.notice = 'todo_reminders_disabled';
+      trace('reminders-disabled');
+      return save();
+    }
+    state.stats.failed += 1;
+    state.stats.lastError = String((error && error.message) || error);
+    trace('write-fail:' + state.stats.lastError);
+    return save();
+  }
+
+  function removeRecord(paperId, todoId) {
+    var bucket = state.todos[paperId];
+    if (!bucket || !Object.prototype.hasOwnProperty.call(bucket, todoId)) return false;
+    delete bucket[todoId];
+    if (Object.keys(bucket).length === 0) delete state.todos[paperId];
+    return true;
+  }
+
+  function sameInstant(a, b) {
+    if (a === null || a === undefined) return b === null || b === undefined;
+    if (b === null || b === undefined) return false;
+    var x = Date.parse(a);
+    var y = Date.parse(b);
+    if (!isFinite(x) || !isFinite(y)) return String(a) === String(b);
+    return x === y;
+  }
+
+  function keyOf(todo) {
+    return String(todo.paperId) + '\u001f' + String(todo.id);
+  }
+
+  /** 临时诊断：把关键节点写进 state，便于在没有控制台时定位卡点。 */
+  function trace(message) {
+    if (!Array.isArray(state.stats.trace)) state.stats.trace = [];
+    state.stats.trace.push(new Date().toISOString().slice(11, 19) + ' ' + message);
+    if (state.stats.trace.length > 60) state.stats.trace.shift();
+    void save();
+  }
+
+  // ---------------------------------------------------- 事件与字段归一化
+
+  /**
+   * 宿主用 JsonStringEnumConverter(CamelCase) 序列化枚举，[Flags] 会变成
+   * "text, reminder" 这样的逗号串；同时兼容数字与数组形式，避免依赖单一编码。
+   * 返回 null 表示负载里没有 changedFields，调用方退回文本比对。
+   */
+  function readChangedFields(raw) {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'number') {
+      var bits = new Set();
+      Object.keys(FIELD_BITS).forEach(function (name) {
+        if (raw & FIELD_BITS[name]) bits.add(name);
+      });
+      return bits;
+    }
+    if (typeof raw === 'string') {
+      var set = new Set();
+      raw.split(',').forEach(function (part) {
+        var name = part.trim().toLowerCase();
+        if (name) set.add(name);
+      });
+      return set;
+    }
+    if (Array.isArray(raw)) {
+      var arrSet = new Set();
+      raw.forEach(function (value) {
+        var name = String(value || '').trim().toLowerCase();
+        if (name) arrSet.add(name);
+      });
+      return arrSet;
+    }
+    return null;
+  }
+
+  function normalizeKind(event) {
+    var raw = String((event && event.kind) || '').toLowerCase();
+    if (raw === 'todocreated') return 'created';
+    if (raw === 'todochanged') return 'changed';
+    if (raw === 'tododeleted') return 'deleted';
+    return null;
+  }
+
+  function isReminderTrigger(before, after) {
+    if (!before || !after) return false;
+    return before.reminderTriggered !== true && after.reminderTriggered === true;
+  }
+
+  // ------------------------------------------------------------ 事件入口
+
+  function onHostEvent(event) {
+    var kind = normalizeKind(event);
+    if (!kind) return Promise.resolve();
+
+    state.stats.lastEventAt = new Date().toISOString();
+
+    if (kind === 'created') return applyTodo(event.todo);
+    if (kind === 'deleted') return forgetTodo(event.todo);
+    return onChanged(event);
+  }
+
+  function onChanged(event) {
+    var before = event.before || null;
+    var after = event.after || null;
+    if (!after) return Promise.resolve();
+
+    var fields = readChangedFields(event.changedFields);
+
+    // 1. 系统提醒事件：不解析，只记一次触发时间
+    if (isReminderTrigger(before, after) && !(fields && fields.has('text'))) {
+      markTriggered(after);
+      return Promise.resolve();
+    }
+
+    // 2. 明确不含正文变化：直接返回
+    if (fields && !fields.has('text')) {
+      state.stats.skipped += 1;
+      return Promise.resolve();
+    }
+
+    // 3. 防御：没有 changedFields 时的文本比对
+    if (before && before.text === after.text) {
+      state.stats.skipped += 1;
+      return Promise.resolve();
+    }
+
+    return applyTodo(after);
+  }
+
+  function markTriggered(todo) {
+    var prev = getRecord(todo.paperId, todo.id);
+    if (!prev) return;
+    prev.triggeredAt = new Date().toISOString();
+    void save();
+  }
+
+  function forgetTodo(todo) {
+    if (!todo || !todo.paperId || !todo.id) return Promise.resolve();
+    if (!removeRecord(todo.paperId, todo.id)) return Promise.resolve();
+    return save();
+  }
+
+  // ------------------------------------------------------------ 核心处理
+
+  function applyTodo(todo) {
+    if (!todo || !todo.paperId || !todo.id) return Promise.resolve();
+    if (!Parser) {
+      state.stats.lastError = 'parser_not_loaded';
+      return save();
+    }
+
+    var key = keyOf(todo);
+    if (inflight.has(key)) {
+      state.stats.skipped += 1;
+      return Promise.resolve();
+    }
+    inflight.add(key);
+
+    return Promise.resolve()
+      .then(function () {
+        var parsed = Parser.parseText(todo.text || '', new Date());
+        var prev = getRecord(todo.paperId, todo.id);
+
+        if (!parsed.ok) {
+          if (parsed.reason === 'no_expression') return clearIfOurs(todo, prev);
+          recordDiagnostic(todo, parsed);
+          return undefined;
+        }
+        return applyParsed(todo, parsed.value, prev);
+      })
+      .catch(function (error) {
+        state.stats.failed += 1;
+        state.stats.lastError = String((error && error.message) || error);
+        return save();
+      })
+      .then(function () {
+        inflight.delete(key);
+      });
+  }
+
+  /** 表达式存在时的写入判定 */
+  function applyParsed(todo, value, prev) {
+    // 表达式字符串没变：绝不重算相对时间
+    if (prev && prev.expression === value.expression) {
+      if (!prev.managedByPlugin) {
+        // 已被用户接管，等下一次正文变化再谈
+        state.stats.skipped += 1;
+        return Promise.resolve();
+      }
+      if (todo.reminderAt === null || todo.reminderAt === undefined) {
+        var targetMs = Date.parse(prev.resolvedAt);
+        if (isFinite(targetMs) && targetMs > Date.now()) {
+          return writeReminder(todo, prev.expression, prev.resolvedAt);
+        }
+        return Promise.resolve();
+      }
+      if (!sameInstant(todo.reminderAt, prev.lastAppliedReminderAt)) {
+        prev.managedByPlugin = false;
+        prev.lastAppliedReminderAt = todo.reminderAt;
+        return save();
+      }
+      state.stats.skipped += 1;
+      return Promise.resolve();
+    }
+
+    // 表达式新增或变更：以表达式为准
+    return writeReminder(todo, value.expression, value.resolvedAt);
+  }
+
+  /** 写入提醒并更新状态指纹 */
+  function writeReminder(todo, expression, iso) {
+    trace('set-begin:' + String(todo.id).slice(0, 6));
+    return hostRequest('todos.setReminder', {
+      paperId: todo.paperId,
+      todoId: todo.id,
+      reminderAt: iso
+    }, 8000)
+      .then(function () {
+        trace('set-ok:' + String(todo.id).slice(0, 6));
+        setRecord(todo.paperId, todo.id, {
+          expression: expression,
+          resolvedAt: iso,
+          lastAppliedReminderAt: iso,
+          managedByPlugin: true,
+          triggeredAt: null
+        });
+        state.stats.applied += 1;
+        return save();
+      })
+      .catch(handleWriteError);
+  }
+
+  /** 表达式消失时的清理（FR-05） */
+  function clearIfOurs(todo, prev) {
+    if (!prev) return Promise.resolve();
+
+    var stillOurs = prev.managedByPlugin && sameInstant(todo.reminderAt, prev.lastAppliedReminderAt);
+    if (!stillOurs) {
+      removeRecord(todo.paperId, todo.id);
+      return save();
+    }
+
+    return hostRequest('todos.setReminder', {
+      paperId: todo.paperId,
+      todoId: todo.id,
+      reminderAt: null
+    }, 8000)
+      .then(function () {
+        removeRecord(todo.paperId, todo.id);
+        state.stats.applied += 1;
+        return save();
+      })
+      .catch(handleWriteError);
+  }
+
+  function recordDiagnostic(todo, parsed) {
+    var expression = parsed.expression || '';
+    var text = String(todo.text || '');
+    var signature = [todo.id, expression, parsed.reason, text].join('\u001f');
+
+    var duplicate = state.diagnostics.some(function (item) {
+      return item && item.signature === signature;
+    });
+    state.stats.failed += 1;
+    if (duplicate) return;
+
+    state.diagnostics.push({
+      signature: signature,
+      at: new Date().toISOString(),
+      paperId: todo.paperId,
+      todoId: todo.id,
+      text: text.slice(0, 200),
+      expression: expression,
+      reason: parsed.reason
+    });
+    if (state.diagnostics.length > DIAG_LIMIT) {
+      state.diagnostics.splice(0, state.diagnostics.length - DIAG_LIMIT);
+    }
+    void save();
+  }
+
+  // -------------------------------------------------------- 启动对账
+
+  function reconcile() {
+    if (!window.papertodo || !window.papertodo.workspace) {
+      trace('reconcile:no-workspace');
+      return Promise.resolve(0);
+    }
+    trace('reconcile:begin');
+    return hostRequest('todos.list', { includeBlank: false }, 6000)
+      .then(function (result) {
+        var list = Array.isArray(result)
+          ? result
+          : (result && Array.isArray(result.todos) ? result.todos : []);
+        var seen = new Set();
+
+        state.stats.lastReconcileSeen = list.length;
+        trace('reconcile:list-ok:' + list.length);
+
+        return list.reduce(function (chain, todo) {
+          if (!todo || !todo.id || !todo.paperId) return chain;
+          seen.add(keyOf(todo));
+          return chain.then(function () {
+            return reconcileOne(todo).catch(function (error) {
+              state.stats.failed += 1;
+              state.stats.lastError = String((error && error.message) || error);
+              trace('one-fail:' + state.stats.lastError);
+            });
+          });
+        }, Promise.resolve()).then(function () {
+          return pruneOrphans(seen).then(function () {
+            return seen.size;
+          });
+        });
+      })
+      .catch(function (error) {
+        state.stats.failed += 1;
+        state.stats.lastError = 'todos.list: ' + String((error && error.message) || error);
+        trace('reconcile:list-fail:' + state.stats.lastError);
+        return save().then(function () { return 0; });
+      });
+  }
+
+  /**
+   * Runtime 会在 provider 刚拿到第一张纸片时启动，此时宿主可能还没装载完 Todo 模型，
+   * todos.list 会返回空数组。空列表分不清「真的没有 Todo」和「还没加载好」，
+   * 所以空结果按退避重试，最多三次。对账本身是幂等的，多跑一遍没有副作用。
+   */
+  function reconcileWithRetry() {
+    var attempts = 0;
+
+    function attempt() {
+      attempts += 1;
+      return reconcile().then(function (seenCount) {
+        if (seenCount === 0 && attempts < 3) {
+          return new Promise(function (resolve) {
+            setTimeout(resolve, attempts * 2000);
+          }).then(attempt);
+        }
+        return seenCount;
+      });
+    }
+
+    return attempt();
+  }
+
+  function reconcileOne(todo) {
+    var prev = getRecord(todo.paperId, todo.id);
+    var parsed = Parser.parseText(todo.text || '', new Date());
+
+    if (!parsed.ok) {
+      if (parsed.reason === 'no_expression') return clearIfOurs(todo, prev);
+      recordDiagnostic(todo, parsed);
+      return Promise.resolve();
+    }
+
+    var value = parsed.value;
+
+    // 首次见到这条 Todo：正常解析并设置
+    if (!prev) return writeReminder(todo, value.expression, value.resolvedAt);
+
+    // Host 的提醒时间仍是插件上次写入的值
+    if (sameInstant(todo.reminderAt, prev.lastAppliedReminderAt)) {
+      if (prev.expression !== value.expression) {
+        return writeReminder(todo, value.expression, value.resolvedAt);
+      }
+      state.stats.skipped += 1;
+      return Promise.resolve();
+    }
+
+    // 提醒被清空
+    if (todo.reminderAt === null || todo.reminderAt === undefined) {
+      if (!prev.managedByPlugin) return Promise.resolve();
+      var targetMs = Date.parse(prev.resolvedAt);
+      if (isFinite(targetMs) && targetMs > Date.now()) {
+        return writeReminder(todo, prev.expression, prev.resolvedAt);
+      }
+      return Promise.resolve();
+    }
+
+    // 用户手动改过：降级，不再覆盖
+    prev.managedByPlugin = false;
+    prev.lastAppliedReminderAt = todo.reminderAt;
+    return save();
+  }
+
+  function pruneOrphans(seen) {
+    var dirty = false;
+    Object.keys(state.todos).forEach(function (paperId) {
+      var bucket = state.todos[paperId];
+      Object.keys(bucket).forEach(function (todoId) {
+        if (seen.has(paperId + '\u001f' + todoId)) return;
+        delete bucket[todoId];
+        dirty = true;
+      });
+      if (Object.keys(bucket).length === 0) delete state.todos[paperId];
+    });
+    return dirty ? save() : Promise.resolve();
+  }
+
+  // ------------------------------------------------------------ 生命周期
+
+  function start() {
+    if (started) return Promise.resolve();
+    started = true;
+
+    state.stats.startCount = (state.stats.startCount || 0) + 1;
+    state.stats.startedAt = new Date().toISOString();
+    trace('start');
+    log('runtime started', settings);
+
+    if (!window.papertodo || typeof window.papertodo.onHostEvent !== 'function') {
+      state.stats.lastError = 'bridge_unavailable';
+      return save();
+    }
+
+    try {
+      var dispose = window.papertodo.onHostEvent(
+        SUBSCRIBED_EVENTS,
+        function (event) { void onHostEvent(event); },
+        { excludeOwnOperations: true }
+      );
+      if (typeof dispose !== 'function') log('onHostEvent did not return a disposer');
+    } catch (error) {
+      state.stats.lastError = 'subscribe: ' + String((error && error.message) || error);
+    }
+
+    return save().then(reconcileWithRetry).catch(function (error) {
+      state.stats.lastError = 'start: ' + String((error && error.message) || error);
+      return save();
+    });
+  }
+
+  function bootstrap() {
+    if (started) return Promise.resolve();
+
+    var ready = Promise.resolve();
+    if (!settingsLoaded && window.papertodo && window.papertodo.settings) {
+      ready = ready
+        .then(function () { return window.papertodo.settings.get(); })
+        .then(function (value) {
+          settings = value || {};
+          settingsLoaded = true;
+        })
+        .catch(function () { settingsLoaded = true; });
+    }
+    if (!stateLoaded && window.papertodo && window.papertodo.state) {
+      ready = ready
+        .then(function () { return window.papertodo.state.get(); })
+        .then(function (value) {
+          state = normalizeState(value);
+          stateLoaded = true;
+        })
+        .catch(function () { stateLoaded = true; });
+    }
+    return ready.then(start);
+  }
+
+  function onBridgeMessage(message) {
+    if (!message || typeof message !== 'object') return;
+
+    if (message.type === 'initialize') {
+      if (!started && !settingsLoaded) {
+        settings = message.settings || {};
+        settingsLoaded = true;
+      }
+      if (!started && !stateLoaded) {
+        state = normalizeState(message.state);
+        stateLoaded = true;
+      }
+      void bootstrap();
+      return;
+    }
+
+    if (message.type === 'settingsChanged') {
+      settings = message.settings || {};
+      settingsLoaded = true;
+      return;
+    }
+
+    if (message.type === 'hostSubscriptionError') {
+      state.stats.lastError = 'subscription: ' + JSON.stringify(message.error || {});
+      void save();
+    }
+  }
+
+  window.addEventListener('papertodo', function (event) {
+    onBridgeMessage(event.detail);
+  });
+
+  // 兜底：initialize 在监听器注册前已经派发时，主动拉一次状态
+  setTimeout(function () { void bootstrap(); }, 2000);
+})();
+</script>
+</body>
+</html>

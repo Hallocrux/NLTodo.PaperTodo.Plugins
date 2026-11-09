@@ -1,0 +1,34 @@
+{
+  "kind": "web",
+  "id": "papertodo.nltodo",
+  "name": "NLTodo",
+  "description": "在普通 Todo 里写 @17tomorrow 这样的标记，自动为它设置 PaperTodo 原生提醒。",
+  "version": "0.1.0",
+  "apiVersion": "2.3",
+  "stateVersion": 1,
+  "maxPaperInstances": 1,
+  "entry": "web/index.html",
+  "runtime": "web/runtime.html",
+  "capabilities": [
+    "runtime"
+  ],
+  "permissions": [
+    "todos.read",
+    "todos.update"
+  ],
+  "startupPaper": {
+    "enabledSetting": "autoStart",
+    "instanceKey": "runtime-owner",
+    "presentation": "hidden",
+    "title": "NLTodo"
+  },
+  "settings": [
+    {
+      "id": "autoStart",
+      "type": "boolean",
+      "name": "启用 NLTodo",
+      "description": "保持开启，NLTodo 才能在后台识别时间表达式并设置提醒。关闭后已有的提醒仍然有效，但不再自动更新。",
+      "default": true
+    }
+  ]
+}

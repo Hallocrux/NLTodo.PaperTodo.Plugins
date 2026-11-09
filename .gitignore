@@ -1,0 +1,17 @@
+# 本地产物与工具噪音
+node_modules/
+_logs/
+_update-notifier-last-checked
+*.log
+
+# 构建输出
+输出/
+bin/
+obj/
+
+# 内部工作区数据（记忆、会话记录），不随仓库分发
+.workbuddy/
+
+# 系统文件
+.DS_Store
+Thumbs.db
