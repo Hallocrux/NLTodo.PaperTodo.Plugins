@@ -1,31 +1,37 @@
 # NLTodo
 
-PaperTodo 的 Web 插件。在普通 Todo 正文里写一个时间标记，插件会调用 PaperTodo 原生的提醒 API，把「什么时候提醒」交给宿主去调度。
+PaperTodo 的 Web 插件。直接在 Todo 正文里写时间，插件会调用 PaperTodo 原生的提醒 API，把「什么时候提醒」交给宿主去调度。
 
 Todo 本身不被改写，不会多出一张插件专属的纸片，也不引入新的任务体系。
 
 ```text
-□ 询问详细信息 @17tomorrow
+□ 询问详细信息 明天下午三点
 ```
 
-## 语法（V1）
+## 语法
 
-| 标记 | 含义 |
+不需要任何前缀，正文里说人话就行。
+
+| 写法 | 含义 |
 |---|---|
-| `@17today` | 今天 17:00 |
-| `@17tomorrow` | 明天 17:00 |
-| `@09:30tomorrow` | 明天 09:30 |
-| `@in25m` | 25 分钟后 |
-| `@in2h` | 2 小时后 |
-| `@in1d` | 24 小时后 |
-| `@2026-11-12T17:00` | 指定日期与时间 |
+| `明天下午三点交材料` | 明天 15:00 |
+| `20分钟后提醒我` | 当前时间 + 20 分钟 |
+| `下周一交报告` | 下周一 09:00 |
+| `周三上午10点开会` | 最近的周三 10:00 |
+| `今晚8点` | 今天 20:00 |
+| `12月1日` | 最近的那个 12 月 1 日 09:00 |
+| `后天` / `大后天` | 对应日期 09:00 |
+| `tomorrow at 5pm` | 英文同样可用 |
 
 规则：
 
-- 标记必须与正文之间隔开（行首、空格或标点）。`问@17tomorrow` 和 `a@17tomorrow.com` 都不识别。
-- 一条 Todo 只能有一个标记；出现两个合法标记时视为歧义，不设置提醒。
-- 纯数字标记（`@17`）不识别，必须带 `today` / `tomorrow` 后缀。
-- 解析出的时间已经过去时，不设置提醒，也不会自动顺延到明天。
+- **只识别第一条时间说法**。`3天后再说，5点开会` 只认 `3天后`，后面的忽略。
+- 只有日期没有时刻的，补 **09:00**。
+- 只写时刻且今天已过的，默认**不设提醒**，也不会自动顺延；可在设置里打开「顺延到明天」。
+- 中文 `三点` 这类没有上下午限定的，1–6 点按下午理解（15:00），7–12 点按字面。
+- 解析出的时间已经过去时，不设提醒，只记一条诊断。
+
+> **0.2.0 是破坏性变更**：`@17tomorrow` 这类旧标记已废弃。存量 Todo 里的 `@` 标记不会再被识别，提醒会随该 Todo 的下一次正文改动被清空。
 
 ## 目录结构
 
@@ -35,11 +41,14 @@ nltodo/
 ├── web/
 │   ├── index.html       Body 占位页（语法说明）
 │   ├── runtime.html     后台 Runtime：事件监听 + 对账
-│   └── parser.js        时间解析器（纯函数，可单测）
+│   ├── parser.js        时间解析器（纯函数，可单测）
+│   └── vendor/          chrono-node 中英定制包（77 KB）+ NOTICE
 ├── test/
 │   ├── parser.test.js   解析器单测
-│   └── runtime.test.js  Runtime 集成测试（vm + 宿主桩）
-├── prds/11-9.md         产品需求文档 v0.2
+│   ├── runtime.test.js  Runtime 集成测试（vm + 宿主桩）
+│   └── host-e2e.mjs     通过宿主 MCP 管道的端到端脚本
+├── prds/11-9.md         产品需求文档 v0.2（第 3 章的 @ 语法已作废）
+├── prds/nl-time-implementation-proposal.md  自然语言识别方案
 └── package.json
 ```
 
@@ -78,7 +87,8 @@ nltodo/
 
 ```bash
 cp plugin.json <PaperTodo>/plugins/nltodo.papertodo.plugins/ && \
-cp web/index.html web/runtime.html web/parser.js <PaperTodo>/plugins/nltodo.papertodo.plugins/web/
+cp web/index.html web/runtime.html web/parser.js <PaperTodo>/plugins/nltodo.papertodo.plugins/web/ && \
+cp web/vendor/* <PaperTodo>/plugins/nltodo.papertodo.plugins/web/vendor/
 ```
 
 ## 验证是否真的在跑
@@ -122,7 +132,7 @@ npm test
 node --test test/parser.test.js test/runtime.test.js
 ```
 
-`parser.test.js` 覆盖 20 条语法与边界用例；`runtime.test.js` 用 `vm` 加载真实的 `runtime.html` 内联脚本，配一个内存宿主桩，覆盖 15 条事件处理路径（幂等、changedFields 门控、提醒触发、表达式增删改、启动对账、孤儿状态清理）。
+`parser.test.js` 覆盖 21 条识别与规则用例（含两条回禁用例：`周三` 必须落到未来、`11月12日` 必须是今年）；`runtime.test.js` 用 `vm` 加载真实的 `runtime.html` 内联脚本，配一个内存宿主桩，覆盖 18 条事件处理路径（幂等、changedFields 门控、提醒触发、时间说法增删改、启动对账、完成态、孤儿状态清理）。
 
 ## 四个必须知道的行为
 

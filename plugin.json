@@ -2,8 +2,8 @@
   "kind": "web",
   "id": "nltodo.papertodo.plugins",
   "name": "NLTodo",
-  "description": "在普通 Todo 里写 @17tomorrow 这样的标记，自动为它设置 PaperTodo 原生提醒。",
-  "version": "0.1.0",
+  "description": "在 Todo 里直接写「明天下午三点」这样的说法，自动为它设置 PaperTodo 原生提醒。",
+  "version": "0.2.0",
   "apiVersion": "2.3",
   "stateVersion": 1,
   "maxPaperInstances": 1,
@@ -27,8 +27,15 @@
       "id": "autoStart",
       "type": "boolean",
       "name": "启用 NLTodo",
-      "description": "保持开启，NLTodo 才能在后台识别时间表达式并设置提醒。关闭后已有的提醒仍然有效，但不再自动更新。",
+      "description": "保持开启，NLTodo 才能在后台识别时间说法并设置提醒。关闭后已有的提醒仍然有效，但不再自动更新。",
       "default": true
+    },
+    {
+      "id": "bareTimeRolloverNewDay",
+      "type": "boolean",
+      "name": "只写时间且已过时顺延到明天",
+      "description": "关闭时，晚上写「17:00 开会」不会设提醒；开启后自动理解为明天 17:00。",
+      "default": false
     }
   ]
 }

@@ -2,12 +2,19 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
 const path = require('node:path');
 
-const { parseText } = require(path.join(__dirname, '..', 'web', 'parser.js'));
+const ROOT = path.join(__dirname, '..');
 
-// 固定基准时间：2026-11-09（周一）17:28 本地时间
-const NOW = new Date(2026, 10, 9, 17, 28, 0, 0);
+// 载入 vendor 包（IIFE，模拟浏览器全局），再载入解析器
+const vendorSource = fs.readFileSync(path.join(ROOT, 'web', 'vendor', 'chrono-zh-en.min.js'), 'utf8');
+globalThis.NLTime = new Function(vendorSource + '; return NLTime;')();
+
+const { parseText } = require(path.join(ROOT, 'web', 'parser.js'));
+
+// 基准时间：2026-11-09（周一）19:43 本地时间
+const NOW = new Date(2026, 10, 9, 19, 43, 0, 0);
 
 function localOf(iso) {
   const ms = Date.parse(iso);
@@ -16,105 +23,153 @@ function localOf(iso) {
   return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes()];
 }
 
-function expectAt(result, [y, mo, d, h, mi]) {
-  assert.strictEqual(result.ok, true, `解析失败: ${result.reason}`);
-  assert.deepStrictEqual(localOf(result.value.resolvedAt), [y, mo, d, h, mi]);
+function expectAt(text, expected, options) {
+  const result = parseText(text, NOW, options);
+  assert.strictEqual(result.ok, true, `${text} 解析失败: ${result.reason}`);
+  assert.deepStrictEqual(localOf(result.value.resolvedAt), expected, `${text} -> ${result.value.resolvedAt}`);
+  return result;
 }
 
-test('@17tomorrow -> 次日 17:00', () => {
-  const result = parseText('询问详细信息 @17tomorrow', NOW);
-  expectAt(result, [2026, 11, 10, 17, 0]);
-  assert.strictEqual(result.value.expression, '@17tomorrow');
-  assert.strictEqual(result.value.kind, 'dayTime');
-  assert.deepStrictEqual(result.value.span, [7, 18]);
+function expectFail(text, reason, options) {
+  const result = parseText(text, NOW, options);
+  assert.strictEqual(result.ok, false, `${text} 本应失败，实际 ${result.ok ? result.value.resolvedAt : ''}`);
+  assert.strictEqual(result.reason, reason, `${text} 的 reason`);
+  return result;
+}
+
+// ------------------------------------------------------------ 主路径
+
+test('明天下午三点交材料 -> 次日 15:00', () => {
+  const r = expectAt('明天下午三点交材料', [2026, 11, 10, 15, 0]);
+  assert.strictEqual(r.value.matchedText, '明天下午三点');
+  assert.strictEqual(r.value.kind, 'datetime');
+  assert.deepStrictEqual(r.value.span, [0, 6]);
 });
 
-test('@09:30tomorrow -> 次日 09:30', () => {
-  expectAt(parseText('交材料 @09:30tomorrow', NOW), [2026, 11, 10, 9, 30]);
+test('周三上午10点 -> 未来的周三，不是上周', () => {
+  expectAt('周三上午10点开会', [2026, 11, 11, 10, 0]);
 });
 
-test('@17today 时间未到 -> 今天 17:00', () => {
+test('11月12日17:00 -> 今年，不是去年', () => {
+  expectAt('11月12日17:00发布', [2026, 11, 12, 17, 0]);
+});
+
+test('今晚8点 -> 今天 20:00', () => {
+  expectAt('今晚8点', [2026, 11, 9, 20, 0]);
+});
+
+test('下周三15:00', () => {
+  expectAt('下周三15:00 评审', [2026, 11, 18, 15, 0]);
+});
+
+test('相对时间：半小时后 / 两小时后 / 一个半小时后', () => {
+  expectAt('半小时后提醒我', [2026, 11, 9, 20, 13]);
+  expectAt('两小时后', [2026, 11, 9, 21, 43]);
+  expectAt('一个半小时后', [2026, 11, 9, 21, 13]);
+});
+
+test('后天 / 大后天（chrono 的盲区，P0 补丁）', () => {
+  const r = expectAt('后天', [2026, 11, 11, 9, 0]);
+  assert.strictEqual(r.value.kind, 'date');
+  expectAt('大后天', [2026, 11, 12, 9, 0]);
+});
+
+// ------------------------------------------------------ 维度补全
+
+test('只有日期：补 09:00', () => {
+  expectAt('明天', [2026, 11, 10, 9, 0]);
+  expectAt('3天后再说', [2026, 11, 12, 9, 0]);
+  expectAt('下周一交报告', [2026, 11, 16, 9, 0]);
+  expectAt('12月1日', [2026, 12, 1, 9, 0]);
+});
+
+test('时段词：用代表时刻而不是时段起点', () => {
+  expectAt('明天上午', [2026, 11, 10, 9, 0]);
+  expectAt('明天下午', [2026, 11, 10, 15, 0]);
+  expectAt('明天晚上', [2026, 11, 10, 20, 0]);
+  expectAt('后天下午', [2026, 11, 11, 15, 0]);
+});
+
+test('月份日期落到最近一次未来', () => {
+  expectAt('11月1日', [2027, 11, 1, 9, 0]);
+});
+
+// ------------------------------------------------------ 裸时间策略
+
+test('裸时间已过：默认判失败', () => {
+  expectFail('17:00 开会', 'past_time');
+  expectFail('三点开会', 'past_time');
+});
+
+test('裸时间已过：开启 rollover 后顺延到明天', () => {
+  expectAt('17:00 开会', [2026, 11, 10, 17, 0], { rollover: true });
+  expectAt('三点开会', [2026, 11, 10, 15, 0], { rollover: true });
+});
+
+test('裸时间未到：当天生效', () => {
   const morning = new Date(2026, 10, 9, 8, 0, 0, 0);
-  expectAt(parseText('开会 @17today', morning), [2026, 11, 9, 17, 0]);
+  const r = parseText('17:00 开会', morning, { rollover: false });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(localOf(r.value.resolvedAt), [2026, 11, 9, 17, 0]);
 });
 
-test('@17today 时间已过 -> past_time', () => {
-  const result = parseText('开会 @17today', NOW);
-  assert.strictEqual(result.ok, false);
-  assert.strictEqual(result.reason, 'past_time');
+test('1-6 点按下午理解（D-06）', () => {
+  const morning = new Date(2026, 10, 9, 8, 0, 0, 0);
+  const r = parseText('三点开会', morning, { rollover: false });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(localOf(r.value.resolvedAt), [2026, 11, 9, 15, 0]);
 });
 
-test('相对时间 @in25m / @in2h / @in1d', () => {
-  expectAt(parseText('喝水 @in25m', NOW), [2026, 11, 9, 17, 53]);
-  expectAt(parseText('喝水 @in2h', NOW), [2026, 11, 9, 19, 28]);
-  expectAt(parseText('喝水 @in1d', NOW), [2026, 11, 10, 17, 28]);
+// ------------------------------------------------------ 负向
+
+test('没有时间表达', () => {
+  expectFail('吃饭', 'no_expression');
+  expectFail('', 'no_expression');
+  expectFail('买牛奶和鸡蛋', 'no_expression');
 });
 
-test('绝对时间 @2026-11-12T17:00', () => {
-  const result = parseText('发布 @2026-11-12T17:00', NOW);
-  expectAt(result, [2026, 11, 12, 17, 0]);
-  assert.strictEqual(result.value.kind, 'absolute');
+test('过去的时间', () => {
+  expectFail('昨天', 'past_time');
 });
 
-test('绝对时间已过 -> past_time', () => {
-  const result = parseText('发布 @2026-01-01T09:00', NOW);
-  assert.strictEqual(result.reason, 'past_time');
+test('@ 语法已废弃', () => {
+  expectFail('任务 @17tomorrow', 'no_expression');
+  expectFail('任务 @in25m', 'no_expression');
 });
 
-test('输出带本地时区偏移', () => {
-  const result = parseText('x @17tomorrow', NOW);
-  assert.match(result.value.resolvedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00[+-]\d{2}:\d{2}$/);
+// ------------------------------------------------------ 单段假设
+
+test('多个时间表达只取第一段', () => {
+  const r = expectAt('3天后再说，5点开会', [2026, 11, 12, 9, 0]);
+  assert.strictEqual(r.value.matchedText, '3天后');
 });
 
-test('前置边界：紧贴汉字不识别', () => {
-  assert.strictEqual(parseText('问@17tomorrow', NOW).reason, 'no_expression');
+test('span 指向原文里的片段', () => {
+  const text = '明天下午三点交材料';
+  const r = parseText(text, NOW);
+  const [start, end] = r.value.span;
+  assert.strictEqual(text.slice(start, end), r.value.matchedText);
 });
 
-test('前置边界：邮箱形态不识别', () => {
-  assert.strictEqual(parseText('a@17tomorrow.com', NOW).reason, 'no_expression');
+// ------------------------------------------------------ 英文
+
+test('英文表达', () => {
+  expectAt('remind me tomorrow at 5pm', [2026, 11, 10, 17, 0]);
+  expectAt('in 25 minutes', [2026, 11, 9, 20, 8]);
+  expectAt('next friday at 3pm', [2026, 11, 20, 15, 0]);
+  expectAt('tomorrow morning', [2026, 11, 10, 8, 0]);
 });
 
-test('后置边界：域名形态不识别', () => {
-  assert.strictEqual(parseText('@17tomorrow.com 是域名', NOW).reason, 'no_expression');
-});
+// ------------------------------------------------------ 内部工具
 
-test('后置边界：句末句号仍识别', () => {
-  expectAt(parseText('x @17tomorrow.', NOW), [2026, 11, 10, 17, 0]);
-});
-
-test('后置边界：中文逗号仍识别', () => {
-  expectAt(parseText('x @17tomorrow，然后再说', NOW), [2026, 11, 10, 17, 0]);
-});
-
-test('普通 @提及 不进入候选', () => {
-  assert.strictEqual(parseText('问问 @张三 的意见', NOW).reason, 'no_expression');
-});
-
-test('多个表达式 -> ambiguous', () => {
-  const result = parseText('@17tomorrow @18tomorrow', NOW);
-  assert.strictEqual(result.ok, false);
-  assert.strictEqual(result.reason, 'ambiguous');
-  assert.deepStrictEqual(result.candidates, ['@17tomorrow', '@18tomorrow']);
-});
-
-test('非法单位 -> invalid_unit', () => {
-  assert.strictEqual(parseText('x @in25xz', NOW).reason, 'invalid_unit');
-});
-
-test('非法日期 -> invalid_date', () => {
-  assert.strictEqual(parseText('x @2026-13-01T17:00', NOW).reason, 'invalid_date');
-  assert.strictEqual(parseText('x @2026-02-30T17:00', NOW).reason, 'invalid_date');
-});
-
-test('非法时间 -> invalid_time', () => {
-  assert.strictEqual(parseText('x @25:00tomorrow', NOW).reason, 'invalid_time');
-});
-
-test('缺少日期后缀不进入候选（待定决策 D-01 的默认实现）', () => {
-  assert.strictEqual(parseText('x @17', NOW).reason, 'no_expression');
-});
-
-test('空文本与纯文本', () => {
-  assert.strictEqual(parseText('', NOW).reason, 'no_expression');
-  assert.strictEqual(parseText('买牛奶', NOW).reason, 'no_expression');
+test('中文数字', () => {
+  const { cnNumber } = require(path.join(ROOT, 'web', 'parser.js'))._internal;
+  assert.strictEqual(cnNumber('一'), 1);
+  assert.strictEqual(cnNumber('两'), 2);
+  assert.strictEqual(cnNumber('十'), 10);
+  assert.strictEqual(cnNumber('十二'), 12);
+  assert.strictEqual(cnNumber('二十'), 20);
+  assert.strictEqual(cnNumber('二十五'), 25);
+  assert.strictEqual(cnNumber('7'), 7);
+  assert.ok(Number.isNaN(cnNumber('半')));
 });

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>NLTodo Runtime</title>
+  <script src="vendor/chrono-zh-en.min.js"></script>
   <script src="parser.js"></script>
 </head>
 <body>
@@ -73,7 +74,7 @@
           if (!rec || typeof rec !== 'object') return;
           if (!next.todos[paperId]) next.todos[paperId] = {};
           next.todos[paperId][todoId] = {
-            expression: String(rec.expression || ''),
+            matchedText: String(rec.matchedText || rec.expression || ''),
             resolvedAt: rec.resolvedAt || null,
             lastAppliedReminderAt: rec.lastAppliedReminderAt || null,
             managedByPlugin: rec.managedByPlugin === true,
@@ -102,6 +103,11 @@
     return window.papertodo.state.save(state).catch(function (error) {
       log('state.save failed', error);
     });
+  }
+
+  /** 解析选项：裸时间已过时是否顺延到明天（设置项，默认关闭） */
+  function parseOptions() {
+    return { rollover: settings.bareTimeRolloverNewDay === true };
   }
 
   /**
@@ -329,10 +335,15 @@
 
     return Promise.resolve()
       .then(function () {
-        var parsed = Parser.parseText(todo.text || '', new Date());
+        var parsed = Parser.parseText(todo.text || '', new Date(), parseOptions());
         var prev = getRecord(todo.paperId, todo.id);
 
         if (!parsed.ok) {
+          if (parsed.reason === 'engine_missing') {
+            state.notice = 'engine_missing';
+            trace('engine-missing');
+            return save();
+          }
           if (parsed.reason === 'no_expression') return clearIfOurs(todo, prev);
           recordDiagnostic(todo, parsed);
           return undefined;
@@ -352,7 +363,7 @@
   /** 表达式存在时的写入判定 */
   function applyParsed(todo, value, prev) {
     // 表达式字符串没变：绝不重算相对时间
-    if (prev && prev.expression === value.expression) {
+    if (prev && prev.matchedText === value.matchedText) {
       if (!prev.managedByPlugin) {
         // 已被用户接管，等下一次正文变化再谈
         state.stats.skipped += 1;
@@ -361,7 +372,7 @@
       if (todo.reminderAt === null || todo.reminderAt === undefined) {
         var targetMs = Date.parse(prev.resolvedAt);
         if (isFinite(targetMs) && targetMs > Date.now()) {
-          return writeReminder(todo, prev.expression, prev.resolvedAt);
+          return writeReminder(todo, prev.matchedText, prev.resolvedAt);
         }
         return Promise.resolve();
       }
@@ -375,11 +386,11 @@
     }
 
     // 表达式新增或变更：以表达式为准
-    return writeReminder(todo, value.expression, value.resolvedAt);
+    return writeReminder(todo, value.matchedText, value.resolvedAt);
   }
 
   /** 写入提醒并更新状态指纹 */
-  function writeReminder(todo, expression, iso) {
+  function writeReminder(todo, matchedText, iso) {
     trace('set-begin:' + String(todo.id).slice(0, 6));
     return hostRequest('todos.setReminder', {
       paperId: todo.paperId,
@@ -389,7 +400,7 @@
       .then(function () {
         trace('set-ok:' + String(todo.id).slice(0, 6));
         setRecord(todo.paperId, todo.id, {
-          expression: expression,
+          matchedText: matchedText,
           resolvedAt: iso,
           lastAppliedReminderAt: iso,
           managedByPlugin: true,
@@ -425,9 +436,9 @@
   }
 
   function recordDiagnostic(todo, parsed) {
-    var expression = parsed.expression || '';
+    var matchedText = parsed.matchedText || parsed.expression || '';
     var text = String(todo.text || '');
-    var signature = [todo.id, expression, parsed.reason, text].join('\u001f');
+    var signature = [todo.id, matchedText, parsed.reason, text].join('\u001f');
 
     var duplicate = state.diagnostics.some(function (item) {
       return item && item.signature === signature;
@@ -441,7 +452,7 @@
       paperId: todo.paperId,
       todoId: todo.id,
       text: text.slice(0, 200),
-      expression: expression,
+      matchedText: matchedText,
       reason: parsed.reason
     });
     if (state.diagnostics.length > DIAG_LIMIT) {
@@ -519,9 +530,14 @@
     if (todo.done === true) return Promise.resolve();
 
     var prev = getRecord(todo.paperId, todo.id);
-    var parsed = Parser.parseText(todo.text || '', new Date());
+    var parsed = Parser.parseText(todo.text || '', new Date(), parseOptions());
 
     if (!parsed.ok) {
+      if (parsed.reason === 'engine_missing') {
+        state.notice = 'engine_missing';
+        trace('engine-missing');
+        return save();
+      }
       if (parsed.reason === 'no_expression') return clearIfOurs(todo, prev);
       recordDiagnostic(todo, parsed);
       return Promise.resolve();
@@ -530,12 +546,12 @@
     var value = parsed.value;
 
     // 首次见到这条 Todo：正常解析并设置
-    if (!prev) return writeReminder(todo, value.expression, value.resolvedAt);
+    if (!prev) return writeReminder(todo, value.matchedText, value.resolvedAt);
 
     // Host 的提醒时间仍是插件上次写入的值
     if (sameInstant(todo.reminderAt, prev.lastAppliedReminderAt)) {
-      if (prev.expression !== value.expression) {
-        return writeReminder(todo, value.expression, value.resolvedAt);
+      if (prev.matchedText !== value.matchedText) {
+        return writeReminder(todo, value.matchedText, value.resolvedAt);
       }
       state.stats.skipped += 1;
       return Promise.resolve();
@@ -546,7 +562,7 @@
       if (!prev.managedByPlugin) return Promise.resolve();
       var targetMs = Date.parse(prev.resolvedAt);
       if (isFinite(targetMs) && targetMs > Date.now()) {
-        return writeReminder(todo, prev.expression, prev.resolvedAt);
+        return writeReminder(todo, prev.matchedText, prev.resolvedAt);
       }
       return Promise.resolve();
     }

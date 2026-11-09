@@ -31,7 +31,7 @@
     table { border-collapse: collapse; width: 100%; }
     td { padding: 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
     tr:last-child td { border-bottom: 0; }
-    td.syntax { width: 42%; white-space: nowrap; }
+    td.syntax { width: 52%; }
     code {
       font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
       background: var(--code);
@@ -44,21 +44,22 @@
 </head>
 <body>
   <h1>NLTodo</h1>
-  <p class="lead">在任意 Todo 正文里加一个时间标记，提醒由 PaperTodo 自己调度。</p>
+  <p class="lead">直接在 Todo 正文里写时间，提醒由 PaperTodo 自己调度。</p>
 
   <table>
-    <tr><td class="syntax"><code>@17today</code></td><td class="desc">今天 17:00</td></tr>
-    <tr><td class="syntax"><code>@17tomorrow</code></td><td class="desc">明天 17:00</td></tr>
-    <tr><td class="syntax"><code>@09:30tomorrow</code></td><td class="desc">明天 09:30</td></tr>
-    <tr><td class="syntax"><code>@in25m</code></td><td class="desc">25 分钟后</td></tr>
-    <tr><td class="syntax"><code>@in2h</code></td><td class="desc">2 小时后</td></tr>
-    <tr><td class="syntax"><code>@in1d</code></td><td class="desc">24 小时后</td></tr>
-    <tr><td class="syntax"><code>@2026-11-12T17:00</code></td><td class="desc">指定日期与时间</td></tr>
+    <tr><td class="syntax">明天下午三点交材料</td><td class="desc">明天 15:00</td></tr>
+    <tr><td class="syntax">20分钟后提醒我</td><td class="desc">当前时间 + 20 分钟</td></tr>
+    <tr><td class="syntax">下周一交报告</td><td class="desc">下周一 09:00</td></tr>
+    <tr><td class="syntax">周三上午10点开会</td><td class="desc">最近的周三 10:00</td></tr>
+    <tr><td class="syntax">今晚8点</td><td class="desc">今天 20:00</td></tr>
+    <tr><td class="syntax">12月1日</td><td class="desc">最近的那个 12 月 1 日 09:00</td></tr>
+    <tr><td class="syntax">tomorrow at 5pm</td><td class="desc">英文同样可用</td></tr>
   </table>
 
   <footer>
-    标记必须与正文用空格或标点隔开；一个 Todo 只允许一个时间标记。<br>
-    修改标记会同步改提醒，删掉标记会撤销由 NLTodo 设置的提醒。<br>
+    只识别第一条时间说法；写多个时后面的会被忽略。<br>
+    只有日期没有时刻的，默认 09:00；只写时刻且今天已过的，默认不设提醒（可在设置里改成顺延到明天）。<br>
+    改动词句里的时间会同步改提醒，删掉时间会撤销由 NLTodo 设置的提醒。<br>
     请不要删除名为“NLTodo”的隐藏纸片，它是后台运行的宿主。
   </footer>
 </body>
