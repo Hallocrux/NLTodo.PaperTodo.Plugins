@@ -68,6 +68,23 @@ test('相对时间：半小时后 / 两小时后 / 一个半小时后', () => {
   expectAt('一个半小时后', [2026, 11, 9, 21, 13]);
 });
 
+test('复合时长：一个小时十分钟后 = 70 分钟', () => {
+  // chrono 只会匹配到最后一段「十分钟后」，必须由时长补丁接管
+  const r = expectAt('一个小时十分钟后', [2026, 11, 9, 20, 53]);
+  assert.strictEqual(r.value.matchedText, '一个小时十分钟后');
+  assert.strictEqual(r.value.kind, 'relative');
+  expectAt('一小时十分钟后', [2026, 11, 9, 20, 53]);
+  expectAt('两个小时二十分钟后', [2026, 11, 9, 22, 3]);
+  expectAt('两小时三十分钟后', [2026, 11, 9, 22, 13]);
+});
+
+test('刻钟与中文数字分钟', () => {
+  expectAt('一刻钟后', [2026, 11, 9, 19, 58]);
+  expectAt('三刻钟后', [2026, 11, 9, 20, 28]);
+  expectAt('二十五分钟后', [2026, 11, 9, 20, 8]);
+  expectAt('十分钟之内', [2026, 11, 9, 19, 53]);
+});
+
 test('后天 / 大后天（chrono 的盲区，P0 补丁）', () => {
   const r = expectAt('后天', [2026, 11, 11, 9, 0]);
   assert.strictEqual(r.value.kind, 'date');

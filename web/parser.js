@@ -57,7 +57,24 @@
   };
 
   const RE_DAY_AFTER = /(大后天|后天)\s*(凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|半夜)?/;
-  const RE_HALF_HOUR = /(\d+|[零〇一二两三四五六七八九十]+)\s*个?\s*半\s*个?\s*(?:小时|钟头)\s*(?:以?后|之后)/;
+
+  /**
+   * 中文相对时长。chrono 只吃得到最后一段（"一个小时十分钟后" → 只认"十分钟后"），
+   * 所以整类表达都由这里接管。
+   *
+   *   H = 一小时 / 一个半小时 / 半小时 / 1小时
+   *   M = 十分钟 / 二十五分钟 / 一刻钟 / 半分钟 / 30分
+   * 组合：H[M] 或 M，后面跟 后 / 以后 / 之后 / 之内 / 以内。
+   */
+  const NUM_CN = '(?:\\d+|[零〇一二两三四五六七八九十]+)';
+  const HOUR_PART = '(?:(?:' + NUM_CN + '\\s*个?\\s*)(?:半\\s*个?\\s*)?|半\\s*个?\\s*)(?:小时|钟头)';
+  const MINUTE_PART =
+    '(?:(?:' + NUM_CN + '\\s*个?\\s*)(?:半\\s*)?|半\\s*)(?:分钟|分)|(?:' + NUM_CN + '\\s*个?\\s*)?刻钟';
+  const RE_DURATION = new RegExp(
+    '(?:' + HOUR_PART + '\\s*(?:' + MINUTE_PART + ')?|(?:' + MINUTE_PART + '))\\s*(?:以?后|之后|之内|以内)'
+  );
+  const RE_DURATION_SUFFIX = /\s*(?:以?后|之后|之内|以内)\s*$/;
+
 
   function getEngine() {
     const scope = typeof globalThis !== 'undefined' ? globalThis : {};
@@ -101,6 +118,47 @@
     return new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute || 0, 0, 0);
   }
 
+  /**
+   * 把一段中文时长换算成分钟。认不出返回 null。
+   * 支持：一小时 / 一个半小时 / 半小时 / 十分钟 / 一刻钟 / 半分钟，
+   * 以及小时+分钟的复合形式。
+   */
+  function durationMinutes(phrase) {
+    let total = 0;
+    let matched = false;
+
+    const hourRe = new RegExp('(' + NUM_CN + ')?\\s*个?\\s*(半)?\\s*个?\\s*(?:小时|钟头)');
+    const hour = hourRe.exec(phrase);
+    let rest = phrase;
+    if (hour) {
+      const base = hour[1] ? cnNumber(hour[1]) : 0;
+      if (isFinite(base)) {
+        total += (hour[2] ? base + 0.5 : base) * 60;
+        matched = true;
+        rest = phrase.replace(hour[0], ' ');
+      }
+    }
+
+    const minuteRe = new RegExp('(' + NUM_CN + ')?\\s*个?\\s*(半)?\\s*(分钟|分|刻钟)');
+    const minute = minuteRe.exec(rest);
+    if (minute) {
+      if (minute[3] === '刻钟') {
+        const count = minute[1] ? cnNumber(minute[1]) : 1;
+        if (!isFinite(count)) return null;
+        total += count * 15;
+        matched = true;
+      } else {
+        const base = minute[1] ? cnNumber(minute[1]) : 0;
+        if (!isFinite(base)) return null;
+        total += minute[2] ? base + 0.5 : base;
+        matched = true;
+      }
+    }
+
+    if (!matched || !(total > 0)) return null;
+    return total;
+  }
+
   // ---------------------------------------------------------------- P0
 
   /**
@@ -131,10 +189,10 @@
       return { date: atHour(day, DEFAULT_HOUR), kind: 'date' };
     });
 
-    consider(RE_HALF_HOUR, function (match) {
-      const count = cnNumber(match[1]);
-      if (!isFinite(count) || count <= 0) return null;
-      const minutes = count * 60 + 30;
+    consider(RE_DURATION, function (match) {
+      const phrase = match[0].replace(RE_DURATION_SUFFIX, '');
+      const minutes = durationMinutes(phrase);
+      if (minutes == null) return null;
       return { date: new Date(now.getTime() + minutes * 60 * 1000), kind: 'relative' };
     });
 

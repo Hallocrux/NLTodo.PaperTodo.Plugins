@@ -134,7 +134,7 @@ npm test
 node --test test/parser.test.js test/runtime.test.js
 ```
 
-`parser.test.js` 覆盖 21 条识别与规则用例（含两条回禁用例：`周三` 必须落到未来、`11月12日` 必须是今年）；`runtime.test.js` 用 `vm` 加载真实的 `runtime.html` 内联脚本，配一个内存宿主桩，覆盖 18 条事件处理路径（幂等、changedFields 门控、提醒触发、时间说法增删改、启动对账、完成态、孤儿状态清理）。
+`parser.test.js` 覆盖 23 条识别与规则用例（含两条回禁用例：`周三` 必须落到未来、`11月12日` 必须是今年）；`runtime.test.js` 用 `vm` 加载真实的 `runtime.html` 内联脚本，配一个内存宿主桩，覆盖 18 条事件处理路径（幂等、changedFields 门控、提醒触发、时间说法增删改、启动对账、完成态、孤儿状态清理）。
 
 ## 四个必须知道的行为
 

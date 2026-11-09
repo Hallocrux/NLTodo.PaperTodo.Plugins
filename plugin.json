@@ -3,7 +3,7 @@
   "id": "nltodo.papertodo.plugins",
   "name": "NLTodo",
   "description": "在 Todo 里直接写「明天下午三点」这样的说法，自动为它设置 PaperTodo 原生提醒。",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "apiVersion": "2.3",
   "stateVersion": 1,
   "maxPaperInstances": 1,

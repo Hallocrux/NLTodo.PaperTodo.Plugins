@@ -1,6 +1,6 @@
 {
   "name": "nltodo.papertodo.plugins",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "PaperTodo Web Plugin：在 Todo 里直接写时间说法，自动设置宿主原生提醒。",
   "scripts": {
